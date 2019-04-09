@@ -21,3 +21,4 @@ Bin/*
 *.out
 *.map
 *.lst
+tools/Keil/Project/WM_W600_Flash.dep
