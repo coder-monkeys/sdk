@@ -13,11 +13,13 @@
 *****************************************************************************/ 
 #include "wm_include.h"
 
+extern int mqttDemoTest(void);
 
 void UserMain(void)
 {
 	printf("\n user task\n");
-
+	
+	mqttDemoTest();
 #if DEMO_CONSOLE
 	CreateDemoTask();
 #endif

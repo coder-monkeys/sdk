@@ -888,7 +888,8 @@ int HTTPWrapperSSLConnect(tls_ssl_t **ssl_p,int fd,const struct sockaddr *name,i
 	int32			transferred, len, sessionFlag, SNIextLen;
 	tls_ssl_t			*ssl;
 	unsigned char	*buf, *SNIext;
-	uint32 g_cipher[16] = {4, 5, 0x002F, 0x0035};
+	//uint32 g_cipher[16] = {4, 5, 0x002F, 0x0035};
+	uint32 g_cipher[16] = {0x002F, 0x0035, 0x003C};
 	int g_ciphers = 4;
 	fd_set rdSet;
 	fd_set wtSet;
@@ -941,7 +942,7 @@ int HTTPWrapperSSLConnect(tls_ssl_t **ssl_p,int fd,const struct sockaddr *name,i
 	}
 #ifdef SSL_FLAGS_SSLV3
 	/* Corresponds to version 3.g_version */
-	switch (1) {
+	switch (3) {
 	case 0:
         sessionFlag = SSL_FLAGS_SSLV3;
 		break;
