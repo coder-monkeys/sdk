@@ -1,6 +1,9 @@
 #include "wm_include.h"
 #include "libemqtt.h"
 #include "HTTPClientWrapper.h"
+#include <time.h>
+#include "wm_rtc.h"
+#include "wm_ntp.h"
 
 #define MQTT_BUFF_SIZE         256
 #define MQTT_OK                0
@@ -16,11 +19,21 @@
 #define MQTT_USE_SSL           (1 && TLS_CONFIG_HTTP_CLIENT_SECURE)
 #define MQTT_SERVER_NAME       "49.4.93.24"
 #define MQTT_SERVER_PORT       8883
-#define MQTT_DEVICE_NAME       "YH_WA710"
-#define MQTT_DEVICE_ID         "938ea1c3-7702-4470-bf59-fbb49a7f5cf5"
-#define MQTT_USER_KEY          "b74f08312f240d316b9f"
+#define DEVICE_ID              "21d081dd-2762-4ad2-9715-3120be5cc89b"
+#define PASSWORD               "89f69ba0bccfd0fd77da"
+#define MQTT_CLIENT_ID         (DEVICE_ID##"_0_1_%s")
+#define MQTT_USER_NAME         DEVICE_ID
+
 #define MQTT_RECV_TASK_PRIO    63
 #define MQTT_PING_INTERVAL     30
+#define BEBUG_BYTES            1
+
+typedef struct _mqtt_para{
+	char clientid[64+8];
+	char username[64];
+	char userkey[64+8];
+	char timestamp[16];
+} mqtt_para;
 
 typedef enum _mqtt_state{
     WAIT_WIFI_OK,
@@ -33,11 +46,45 @@ static mqtt_broker_handle_t mqtt_broker;
 static tls_ssl_t *ssl;
 static char packet_buffer[MQTT_BUFF_SIZE] = { 0 };
 static OS_STK DemoMqttRecvStk[MQTT_TASK_SIZE];
+static mqtt_para loginPara = { 0 };
 
-static int mqtt_send(int socket_info, const void *buf, unsigned int count)
+static void getConnectKey(u8 *hash)
+{
+	u32 keyLen = 0;
+	u32 psdLen = strlen(PASSWORD);
+	unsigned char hash_hex[32+1] = { 0 };
+	struct tm *tblock;
+	
+	u32 t = tls_ntp_client();
+    mqtt_debug("now Time :   %s\n", ctime(&t));
+    tblock=localtime(&t);	//把日历时间转换成本地时间，已经加上与世界时间8小时的偏差,以1900为基准
+    mqtt_debug(" sec=%d,min=%d,hour=%d,mon=%d,year=%d\n",tblock->tm_sec,tblock->tm_min,tblock->tm_hour,tblock->tm_mon,tblock->tm_year);
+	sprintf(loginPara.timestamp, "%04d%02d%02d%02d", tblock->tm_year+1900, tblock->tm_mon+1, tblock->tm_mday, tblock->tm_hour);
+	keyLen = strlen(loginPara.timestamp);
+    tls_set_rtc(tblock);
+	//Hash process has been verified.
+	psHmacSha2(loginPara.timestamp, keyLen, PASSWORD, psdLen, hash_hex, loginPara.timestamp, &keyLen, SHA256_HASH_SIZE);
+#if BEBUG_BYTES
+	mqtt_debug("hash:\r\n");
+	for(int i=0, j=0; i<SHA256_HASH_SIZE; i+=1, j+=2) {
+	    sprintf((hash+j), "%02x", *(hash_hex+i));
+	}
+	mqtt_debug("%s", hash);
+	mqtt_debug("\r\n");
+#endif
+}
+
+static int mqtt_send(int socket_info, unsigned char *buf, unsigned int count)
 {
     int fd = socket_info;
-	
+
+#if BEBUG_BYTES
+	mqtt_debug("mqtt_send %d:\r\n", count);
+	for(int i=0; i<count; i++) {
+		mqtt_debug("%x ", *(buf+i));
+	}
+	mqtt_debug("\r\n");
+#endif
 #if MQTT_USE_SSL
     return HTTPWrapperSSLSend(ssl, fd, buf, count, 0);
 #else
@@ -208,12 +255,12 @@ static int mqtt_open(void)
     char sub_topic[64] = { 0 };
     unsigned short msg_id = 0, msg_id_rcv = 0;
 
-
     memset(packet_buffer, 0, MQTT_BUFF_SIZE);
-    
-    mqtt_init(&mqtt_broker, MQTT_DEVICE_NAME);
-    mqtt_init_auth(&mqtt_broker, MQTT_DEVICE_ID, MQTT_USER_KEY);
-
+	getConnectKey(loginPara.userkey);
+	sprintf(loginPara.clientid, MQTT_CLIENT_ID, loginPara.timestamp);
+    mqtt_init(&mqtt_broker, loginPara.clientid);
+	mqtt_debug("clientid:%s\n", loginPara.clientid);
+    mqtt_init_auth(&mqtt_broker, MQTT_USER_NAME, loginPara.userkey);
     err = init_socket(&mqtt_broker, MQTT_SERVER_NAME, MQTT_SERVER_PORT, MQTT_PING_INTERVAL);
     if(err != 0)
     {
@@ -247,13 +294,13 @@ static int mqtt_open(void)
         return MQTT_ERR;
     }
     
-    sprintf(sub_topic, "/device/{%s}/downward", MQTT_DEVICE_ID);
+    sprintf(sub_topic, "/device/{%s}/downward", DEVICE_ID);
     if(subscribe_topic(sub_topic) != 0) {
         return MQTT_ERR;
     }
 
     memset(sub_topic, 0, 64);
-    sprintf(sub_topic, "/device/{%s}/upward", MQTT_DEVICE_ID);
+    sprintf(sub_topic, "/device/{%s}/upward", DEVICE_ID);
     if(subscribe_topic(sub_topic) != 0) {
         return MQTT_ERR;
     }

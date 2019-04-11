@@ -200,7 +200,6 @@ int get_reply(u8 * buf, u32 * time)
     t3[1] = htonl(*pt);
 
     t3[0] -= UTC_NTP;
-    t3[0] += 8 * 3600;             // 加8小时
 // printf("server Time : %s\n", ctime(&t3[0]));
     *time = t3[0];
 
