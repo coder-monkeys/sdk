@@ -4,8 +4,9 @@
 #include <time.h>
 #include "wm_rtc.h"
 #include "wm_ntp.h"
+#include "cJSON.h"
 
-#define MQTT_BUFF_SIZE         256
+#define MQTT_BUFF_SIZE         1024
 #define MQTT_OK                0
 #define MQTT_ERR               -1
 #define MQTT_READ_TIMEOUT      (-1000)
@@ -23,7 +24,8 @@
 #define PASSWORD               "89f69ba0bccfd0fd77da"
 #define MQTT_CLIENT_ID         (DEVICE_ID##"_0_1_%s")
 #define MQTT_USER_NAME         DEVICE_ID
-
+#define SUB_TOPIC              "/huawei/v1/devices/"##DEVICE_ID##"/command/json"
+#define PUB_TOPIC              "/huawei/v1/devices/"##DEVICE_ID##"/data/json"
 #define MQTT_RECV_TASK_PRIO    63
 #define MQTT_PING_INTERVAL     30
 #define BEBUG_BYTES            1
@@ -36,7 +38,7 @@ typedef struct _mqtt_para{
 } mqtt_para;
 
 typedef enum _mqtt_state{
-    WAIT_WIFI_OK,
+    WAIT_WIFI_OK = 0,
     CONNECT_SERVER,
     RECV_FROM_SERVER,
     SEND_HEARTBEAT,
@@ -58,7 +60,6 @@ static void getConnectKey(u8 *hash)
 	u32 t = tls_ntp_client();
     mqtt_debug("now Time :   %s\n", ctime(&t));
     tblock=localtime(&t);	//把日历时间转换成本地时间，已经加上与世界时间8小时的偏差,以1900为基准
-    mqtt_debug(" sec=%d,min=%d,hour=%d,mon=%d,year=%d\n",tblock->tm_sec,tblock->tm_min,tblock->tm_hour,tblock->tm_mon,tblock->tm_year);
 	sprintf(loginPara.timestamp, "%04d%02d%02d%02d", tblock->tm_year+1900, tblock->tm_mon+1, tblock->tm_mday, tblock->tm_hour);
 	keyLen = strlen(loginPara.timestamp);
     tls_set_rtc(tblock);
@@ -95,9 +96,11 @@ static int mqtt_send(int socket_info, unsigned char *buf, unsigned int count)
 static void mqtt_close(void)
 {
 #if MQTT_USE_SSL
+	mqtt_disconnect(&mqtt_broker);
 	closesocket(mqtt_broker.socketid);
     HTTPWrapperSSLClose(ssl, mqtt_broker.socketid);
 #else
+	mqtt_disconnect(&mqtt_broker);
 	closesocket(mqtt_broker.socketid);
 #endif
 }
@@ -165,12 +168,14 @@ static int read_packet(int timeout)
 	byte_rcvd = recv(mqtt_broker.socketid, packet_buffer, MQTT_BUFF_SIZE, 0)
 #endif
     if(byte_rcvd <= 0) {
+		mqtt_debug("1 byte_rcvd:%d\r\n", byte_rcvd);
 		mqtt_close();
         return MQTT_ERR;
     }
 
     total_bytes += byte_rcvd;
     if(total_bytes < 2) {
+		mqtt_debug("2 byte_rcvd:%d\r\n", byte_rcvd);
         return MQTT_ERR;
     }
 
@@ -187,6 +192,7 @@ static int read_packet(int timeout)
 #endif
         if(byte_rcvd <= 0) {
 			mqtt_close();
+			mqtt_debug("3 byte_rcvd:%d\r\n", byte_rcvd);
             return MQTT_ERR;
         }
         total_bytes += byte_rcvd;
@@ -252,7 +258,6 @@ static int subscribe_topic(char *topic)
 static int mqtt_open(void)
 {
     int err = 0, packet_len = 0;
-    char sub_topic[64] = { 0 };
     unsigned short msg_id = 0, msg_id_rcv = 0;
 
     memset(packet_buffer, 0, MQTT_BUFF_SIZE);
@@ -282,11 +287,13 @@ static int mqtt_open(void)
         mqtt_debug("error (%d) on read packet!\n", packet_len);
         return MQTT_ERR;
     }
+#if BEBUG_BYTES
 	mqtt_debug("recv:%d\n", packet_len);
 	for(int i=0; i<packet_len; i++) {
 		mqtt_debug("%x ", packet_buffer[i]);
 	}
 	mqtt_debug("\n");
+#endif
     if(MQTTParseMessageType(packet_buffer) != MQTT_MSG_CONNACK || packet_buffer[3] != 0x00)
     {
         mqtt_debug("CONNACK expected or failed!\n");
@@ -294,20 +301,59 @@ static int mqtt_open(void)
         return MQTT_ERR;
     }
     
-    sprintf(sub_topic, "/device/{%s}/downward", DEVICE_ID);
-    if(subscribe_topic(sub_topic) != 0) {
+    if(subscribe_topic(SUB_TOPIC) != 0) {
         return MQTT_ERR;
     }
-
-    memset(sub_topic, 0, 64);
-    sprintf(sub_topic, "/device/{%s}/upward", DEVICE_ID);
-    if(subscribe_topic(sub_topic) != 0) {
-        return MQTT_ERR;
-    }
-
-    mqtt_debug("mqtt connect success\n");
+    mqtt_debug("mqtt connect & subscribe topic success\n");
     
     return MQTT_OK;
+}
+
+static int parseReceivedData(uint8_t *data)
+{
+	cJSON *json = NULL;
+	cJSON *msgType, *cmd;
+	
+	json = cJSON_Parse(data);
+	if(json)
+	{
+		cmd = cJSON_GetObjectItem(json, "cmd");
+		msgType = cJSON_GetObjectItem(json, "msgType");
+		mqtt_debug("cmd:%s\r\n", cmd->valuestring);
+		mqtt_debug("msgType:%s\r\n", msgType->valuestring);
+		cJSON_Delete(json); 
+	}
+	else
+	{
+		mqtt_debug("parse json error!\r\n");
+	}
+	return 0;
+}
+
+static int packPublishAck(u32 mid)
+{
+	cJSON *jsRet = NULL;
+	cJSON *jsBody = NULL;
+	
+	jsRet = cJSON_CreateObject();
+	if(jsRet)
+	{
+		cJSON_AddStringToObject(jsRet, "msgType", "deviceRsp");
+		cJSON_AddNumberToObject(jsRet, "mid", mid);
+		cJSON_AddNumberToObject(jsRet, "errcode", 0);
+		cJSON_AddNumberToObject(jsRet, "hasMore", 0);
+		jsBody = cJSON_CreateObject();
+		cJSON_AddNumberToObject(jsBody, "result", 0);
+		cJSON_AddItemToObject(jsRet, "body", jsBody);
+		databuf = cJSON_PrintUnformatted(jsRet);
+		data->sin_recv.sin_port=htons(4322);
+		tls_cloud_socket_sendto(data->socket, databuf,strlen(databuf), 0, (struct sockaddr *)&data->sin_recv, addrlen);
+		if(databuf)
+		tls_mem_free(databuf);
+		
+		cJSON_Delete(jsBody);
+		cJSON_Delete(jsRet); 
+	}
 }
 
 /* Socket safe API,do not need to close socket or ssl session if this fucntion return MQTT_ERR; */
@@ -325,6 +371,15 @@ static int mqtt_recv(int selectTimeOut)
         ret = MQTTParseMessageType(packet_buffer);
         if(ret == MQTT_MSG_PUBLISH) {
 			mqtt_debug("MQTT_MSG_PUBLISH,0x%x\n", packet_buffer[0]);
+			uint8_t topic[64+16] = { 0 }, *msg;
+			uint16_t len;
+			len = mqtt_parse_pub_topic(packet_buffer, topic);
+			topic[len] = '\0';
+			len = mqtt_parse_publish_msg(packet_buffer, &msg);
+			msg[len] = '\0';
+			mqtt_debug("#topic: %s\r\n#msg: %s\r\n", topic, msg);
+			parseReceivedData(msg);
+			mqtt_publish(&mqtt_broker, PUB_TOPIC, "Example: QoS 0", 0);
         }
         else if(ret == MQTT_MSG_PINGRESP) {
             mqtt_debug("mqtt recv pong\n");
@@ -336,6 +391,7 @@ static int mqtt_recv(int selectTimeOut)
     }
     else if(packet_len == -1)
     {
+    	mqtt_debug("packet_len:%d\n", packet_len);
         return MQTT_ERR;
     }
 }
@@ -345,25 +401,6 @@ static int isWifiNetworkOk(void)
 	struct tls_ethif* etherIf= tls_netif_get_ethif();
 
 	return (WM_WIFI_JOINED == tls_wifi_get_state() && etherIf!=NULL && *((u32*)&etherIf->ip_addr)!=0);
-}
-
-static void test(void)
-{
-    int packet_length;
-    
-    packet_length = read_packet(10);
-    mqtt_debug("packet_length = %d\n", packet_length);
-    mqtt_debug("Packet Header: 0x%x...\n", packet_buffer[0]);
-	if(MQTTParseMessageType(packet_buffer) == MQTT_MSG_PUBLISH)
-	{
-		uint8_t topic[20], *msg;
-		uint16_t len;
-		len = mqtt_parse_pub_topic(packet_buffer, topic);
-		topic[len] = '\0'; // for printf
-		len = mqtt_parse_publish_msg(packet_buffer, &msg);
-		msg[len] = '\0'; // for printf
-		mqtt_debug("%s %s\n", topic, msg);
-	}
 }
 
 static void mqttHandleTask( void* lparam )
