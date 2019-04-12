@@ -7,6 +7,7 @@
 #include "cJSON.h"
 
 #define MQTT_BUFF_SIZE         1024
+#define MQTT_PUBACK_SIZE       1024
 #define MQTT_OK                0
 #define MQTT_ERR               -1
 #define MQTT_READ_TIMEOUT      (-1000)
@@ -27,8 +28,9 @@
 #define SUB_TOPIC              "/huawei/v1/devices/"##DEVICE_ID##"/command/json"
 #define PUB_TOPIC              "/huawei/v1/devices/"##DEVICE_ID##"/data/json"
 #define MQTT_RECV_TASK_PRIO    63
-#define MQTT_PING_INTERVAL     30
+#define MQTT_PING_INTERVAL     45
 #define BEBUG_BYTES            1
+#define DEBUG_PUBLISH          1
 
 typedef struct _mqtt_para{
 	char clientid[64+8];
@@ -229,7 +231,7 @@ static int subscribe_topic(char *topic)
 		mqtt_close();
 		return MQTT_ERR;
 	}
-    packet_len = read_packet(5);
+    packet_len = read_packet(10);
     if(packet_len < 0)
     {
         mqtt_debug("error (%d) on read packet!\n", packet_len);
@@ -313,12 +315,14 @@ static int parseReceivedData(uint8_t *data)
 {
 	cJSON *json = NULL;
 	cJSON *msgType, *cmd;
+	int mid = -1;
 	
 	json = cJSON_Parse(data);
 	if(json)
 	{
 		cmd = cJSON_GetObjectItem(json, "cmd");
 		msgType = cJSON_GetObjectItem(json, "msgType");
+		mid = cJSON_GetObjectItem(json, "mid")->valueint;
 		mqtt_debug("cmd:%s\r\n", cmd->valuestring);
 		mqtt_debug("msgType:%s\r\n", msgType->valuestring);
 		cJSON_Delete(json); 
@@ -327,13 +331,14 @@ static int parseReceivedData(uint8_t *data)
 	{
 		mqtt_debug("parse json error!\r\n");
 	}
-	return 0;
+	return mid;
 }
 
-static int packPublishAck(u32 mid)
+static int packPublishAck(u32 mid, char *jsonBuffer)
 {
 	cJSON *jsRet = NULL;
 	cJSON *jsBody = NULL;
+	int ackLen = 0;
 	
 	jsRet = cJSON_CreateObject();
 	if(jsRet)
@@ -343,17 +348,76 @@ static int packPublishAck(u32 mid)
 		cJSON_AddNumberToObject(jsRet, "errcode", 0);
 		cJSON_AddNumberToObject(jsRet, "hasMore", 0);
 		jsBody = cJSON_CreateObject();
-		cJSON_AddNumberToObject(jsBody, "result", 0);
-		cJSON_AddItemToObject(jsRet, "body", jsBody);
-		databuf = cJSON_PrintUnformatted(jsRet);
-		data->sin_recv.sin_port=htons(4322);
-		tls_cloud_socket_sendto(data->socket, databuf,strlen(databuf), 0, (struct sockaddr *)&data->sin_recv, addrlen);
-		if(databuf)
-		tls_mem_free(databuf);
-		
-		cJSON_Delete(jsBody);
+		if( jsBody )
+		{
+			cJSON_AddNumberToObject(jsBody, "result", 0);
+			cJSON_AddItemToObject(jsRet, "body", jsBody);
+			char *databuf = cJSON_PrintUnformatted(jsRet);
+			if(databuf) {
+				mqtt_debug("json:%s\r\n", databuf);
+				if( jsonBuffer ) {
+					ackLen = strlen(databuf);
+					memcpy( jsonBuffer, databuf, ackLen );
+				}
+				tls_mem_free(databuf);
+			}
+		}
 		cJSON_Delete(jsRet); 
 	}
+	return ackLen;
+}
+
+
+static int packPublishReq(char *jsonBuffer)
+{
+	cJSON *jsRet = NULL;
+	cJSON *jsArray = NULL;
+	int ackLen = 0;
+	
+	jsRet = cJSON_CreateObject();
+	if(jsRet)
+	{
+		cJSON_AddStringToObject(jsRet, "msgType", "deviceReq");
+		cJSON_AddNumberToObject(jsRet, "hasMore", 0);
+		jsArray = cJSON_CreateArray();
+		cJSON_AddItemToObject(jsRet, "data", jsArray);
+		{
+			cJSON *arrayObj_1 = cJSON_CreateObject();
+			cJSON_AddItemToArray(jsArray, arrayObj_1);
+			cJSON_AddStringToObject(arrayObj_1, "serviceId", "CtrlDevice");
+
+			cJSON *arrayObj_1_0 = cJSON_CreateObject();
+			cJSON_AddItemToObject(arrayObj_1, "serviceData", arrayObj_1_0);
+			cJSON_AddStringToObject(arrayObj_1_0, "cellId", "555");
+		}
+		char *databuf = cJSON_PrintUnformatted(jsRet);
+		if(databuf) {
+			mqtt_debug("json:%s\r\n", databuf);
+			if( jsonBuffer ) {
+				ackLen = strlen(databuf);
+				memcpy( jsonBuffer, databuf, ackLen );
+			}
+			tls_mem_free(databuf);
+		}
+		cJSON_Delete(jsRet); 
+	}
+	return ackLen;
+}
+
+static int publish_topic(void)
+{
+	char *ackBuffer = NULL;
+	int ackLen = 0;
+
+	ackBuffer = tls_mem_alloc(MQTT_PUBACK_SIZE);
+	if( ackBuffer )
+	{
+		memset(ackBuffer, 0, MQTT_PUBACK_SIZE);
+		ackLen = packPublishReq(ackBuffer);
+		mqtt_publish(&mqtt_broker, PUB_TOPIC, ackBuffer, ackLen, 0);
+		tls_mem_free(ackBuffer);
+	}
+	return ackLen;
 }
 
 /* Socket safe API,do not need to close socket or ssl session if this fucntion return MQTT_ERR; */
@@ -373,13 +437,28 @@ static int mqtt_recv(int selectTimeOut)
 			mqtt_debug("MQTT_MSG_PUBLISH,0x%x\n", packet_buffer[0]);
 			uint8_t topic[64+16] = { 0 }, *msg;
 			uint16_t len;
+			int32_t midValue = 0, ackLen = 0;
+			char *ackBuffer = NULL;
+			
 			len = mqtt_parse_pub_topic(packet_buffer, topic);
 			topic[len] = '\0';
 			len = mqtt_parse_publish_msg(packet_buffer, &msg);
 			msg[len] = '\0';
 			mqtt_debug("#topic: %s\r\n#msg: %s\r\n", topic, msg);
-			parseReceivedData(msg);
-			mqtt_publish(&mqtt_broker, PUB_TOPIC, "Example: QoS 0", 0);
+			midValue = parseReceivedData(msg);
+			if( midValue != -1 ) {
+				ackBuffer = tls_mem_alloc(MQTT_PUBACK_SIZE);
+				if( ackBuffer )
+				{
+					memset(ackBuffer, 0, MQTT_PUBACK_SIZE);
+					ackLen = packPublishAck(midValue, ackBuffer);
+					mqtt_publish(&mqtt_broker, PUB_TOPIC, ackBuffer, ackLen, 0);
+					tls_mem_free(ackBuffer);
+				}
+			}
+			else {
+				return MQTT_ERR;
+			}
         }
         else if(ret == MQTT_MSG_PINGRESP) {
             mqtt_debug("mqtt recv pong\n");
@@ -464,6 +543,9 @@ static void mqttHandleTask( void* lparam )
 				else {
                 	now_state = RECV_FROM_SERVER;
 				}
+#if DEBUG_PUBLISH
+				publish_topic();
+#endif
             }
             break;
             
