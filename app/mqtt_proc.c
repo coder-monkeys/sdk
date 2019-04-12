@@ -29,7 +29,7 @@
 #define PUB_TOPIC              "/huawei/v1/devices/"##DEVICE_ID##"/data/json"
 #define MQTT_RECV_TASK_PRIO    63
 #define MQTT_PING_INTERVAL     45
-#define BEBUG_BYTES            1
+#define BEBUG_BYTES            0
 #define DEBUG_PUBLISH          1
 
 typedef struct _mqtt_para{
@@ -60,21 +60,16 @@ static void getConnectKey(u8 *hash)
 	struct tm *tblock;
 	
 	u32 t = tls_ntp_client();
-    mqtt_debug("now Time :   %s\n", ctime(&t));
+    mqtt_debug("Time: %s\r\n", ctime(&t));
     tblock=localtime(&t);	//把日历时间转换成本地时间，已经加上与世界时间8小时的偏差,以1900为基准
 	sprintf(loginPara.timestamp, "%04d%02d%02d%02d", tblock->tm_year+1900, tblock->tm_mon+1, tblock->tm_mday, tblock->tm_hour);
 	keyLen = strlen(loginPara.timestamp);
     tls_set_rtc(tblock);
-	//Hash process has been verified.
 	psHmacSha2(loginPara.timestamp, keyLen, PASSWORD, psdLen, hash_hex, loginPara.timestamp, &keyLen, SHA256_HASH_SIZE);
-#if BEBUG_BYTES
-	mqtt_debug("hash:\r\n");
 	for(int i=0, j=0; i<SHA256_HASH_SIZE; i+=1, j+=2) {
 	    sprintf((hash+j), "%02x", *(hash_hex+i));
 	}
-	mqtt_debug("%s", hash);
-	mqtt_debug("\r\n");
-#endif
+	mqtt_debug("hash: %s\r\n", hash);
 }
 
 static int mqtt_send(int socket_info, unsigned char *buf, unsigned int count)
@@ -207,7 +202,7 @@ static int read_packet(int timeout)
 static int mqtt_send_heartbeat(void)
 {
 	int ret = -1;
-    printf("mqtt send ping\n");
+	
     ret = mqtt_ping(&mqtt_broker);
 	if( ret == -1 ) {
 		mqtt_close();
@@ -266,7 +261,7 @@ static int mqtt_open(void)
 	getConnectKey(loginPara.userkey);
 	sprintf(loginPara.clientid, MQTT_CLIENT_ID, loginPara.timestamp);
     mqtt_init(&mqtt_broker, loginPara.clientid);
-	mqtt_debug("clientid:%s\n", loginPara.clientid);
+	mqtt_debug("clientid: %s\n", loginPara.clientid);
     mqtt_init_auth(&mqtt_broker, MQTT_USER_NAME, loginPara.userkey);
     err = init_socket(&mqtt_broker, MQTT_SERVER_NAME, MQTT_SERVER_PORT, MQTT_PING_INTERVAL);
     if(err != 0)
@@ -392,7 +387,7 @@ static int packPublishReq(char *jsonBuffer)
 		}
 		char *databuf = cJSON_PrintUnformatted(jsRet);
 		if(databuf) {
-			mqtt_debug("json:%s\r\n", databuf);
+			mqtt_debug("json: %s\r\n", databuf);
 			if( jsonBuffer ) {
 				ackLen = strlen(databuf);
 				memcpy( jsonBuffer, databuf, ackLen );
@@ -461,7 +456,7 @@ static int mqtt_recv(int selectTimeOut)
 			}
         }
         else if(ret == MQTT_MSG_PINGRESP) {
-            mqtt_debug("mqtt recv pong\n");
+            mqtt_debug("recv pong\n");
         }
         else {
             mqtt_debug("Packet Header: 0x%x\n", packet_buffer[0]);
@@ -489,7 +484,7 @@ static void mqttHandleTask( void* lparam )
 
 	while (1) 
     {
-        mqtt_debug("now_state: %d\n", now_state);
+        //mqtt_debug("now_state: %d\n", now_state);
         switch(now_state)
         {
             case WAIT_WIFI_OK:
