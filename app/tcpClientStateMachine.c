@@ -91,12 +91,15 @@ static int mqtt_send(int socket, unsigned char *buf, unsigned int count)
 
 static void mqtt_close(int socket)
 {
+	if( socket >= 0 )
+	{
 #if MQTT_USE_SSL
-	closesocket(socket);
-    HTTPWrapperSSLClose(ssl, socket);
+		closesocket(socket);
+	    HTTPWrapperSSLClose(ssl, socket);
 #else
-	closesocket(socket);
+		closesocket(socket);
 #endif
+	}
 }
 
 /* Socket safe API,do not need to close socket or ssl session if this fucntion return MQTT_ERR; */
@@ -125,7 +128,7 @@ static int init_socket(mqtt_broker_cut_t *broker, const char *hostname, unsigned
         return MQTT_ERR;
     }
 	broker->socketid = socket_id;
-																														
+	
     return MQTT_OK;
 }
 
@@ -195,6 +198,10 @@ static int mqtt_open(mqtt_broker_cut_t *broker)
     unsigned short msg_id = 0, msg_id_rcv = 0;
 
     memset(broker->packet_buffer, 0, MQTT_BUFF_SIZE);
+	if( broker->socketid >= 0 ) 
+	{
+		mqtt_close(broker->socketid);
+	}
     err = init_socket(broker, MQTT_SERVER_NAME, MQTT_SERVER_PORT);
     if(err != 0)
     {
@@ -563,10 +570,6 @@ static void mqttHandleTask( void* lparam )
             
             case CONNECT_SERVER:
             {
-				if( mqtt_broker.socketid >= 0 ) 
-				{
-					mqtt_close(mqtt_broker.socketid);
-				}
             	ret = mqtt_open( &mqtt_broker );
 				if(ret == MQTT_OK ) {
 					tls_os_time_delay(HZ);
