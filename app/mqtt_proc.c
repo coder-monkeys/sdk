@@ -113,6 +113,7 @@ static int init_socket(mqtt_broker_handle_t *broker, const char *hostname, unsig
     if(socket_id < 0) {
         return MQTT_ERR;
     }
+    broker->socketid = socket_id;
     memset(&socket_addr, 0, sizeof(struct sockaddr_in));
     socket_addr.sin_family = AF_INET;
     socket_addr.sin_port = htons(port);
@@ -129,7 +130,6 @@ static int init_socket(mqtt_broker_handle_t *broker, const char *hostname, unsig
         return MQTT_ERR;
     }
     mqtt_set_alive(broker, keepalive);
-    broker->socketid = socket_id;
     broker->mqttsend = mqtt_send;
 
     return MQTT_OK;
