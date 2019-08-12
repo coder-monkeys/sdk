@@ -100,6 +100,7 @@ static void mqtt_close(void)
 	mqtt_disconnect(&mqtt_broker);
 	closesocket(mqtt_broker.socketid);
 #endif
+	mqtt_broker.socketid = -1;
 }
 
 /* Socket safe API,do not need to close socket or ssl session if this fucntion return MQTT_ERR; */
