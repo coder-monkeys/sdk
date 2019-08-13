@@ -110,6 +110,8 @@ static int init_socket(mqtt_broker_handle_t *broker, const char *hostname, unsig
     struct sockaddr_in socket_addr;
     
     socket_id = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    /* 将socket设置为非阻塞方式，因有测试到在给路由器断电时，connect会阻塞很久，最后导致看门狗复位; */
+    fcntl(socket_id, F_SETFL, O_NONBLOCK);
     if(socket_id < 0) {
         return MQTT_ERR;
     }
