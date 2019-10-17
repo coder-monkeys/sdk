@@ -100,93 +100,37 @@ static void mqtt_close(void)
 	mqtt_disconnect(&mqtt_broker);
 	closesocket(mqtt_broker.socketid);
 #endif
-	mqtt_broker.socketid = -1;
-}
-
-static int connect_nonblock(int sockfd, const struct sockaddr_in *saptr, socklen_t salen, int nsec)
-{
-    int flags, n, error, code;
-    socklen_t len;
-    fd_set wset;
-    struct timeval tval;
-
-    flags = fcntl(sockfd, F_GETFL, 0);
-    fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
-
-    error = 0;
-    if ((n = connect(sockfd, saptr, salen)) == 0) {
-        goto done;
-    } else if (n < 0 && errno != EINPROGRESS){
-        return (-1);
-    }
-    /* Do whatever we want while the connect is taking place */
-    FD_ZERO(&wset);
-    FD_SET(sockfd, &wset);
-    tval.tv_sec = nsec;
-    tval.tv_usec = 0;
-
-    if ((n = select(sockfd+1, NULL, &wset, 
-                    NULL, nsec ? &tval : NULL)) == 0) {
-        close(sockfd);  /* timeout */
-        errno = ETIMEDOUT;
-        return (-1);
-    }
-
-    if (FD_ISSET(sockfd, &wset)) {
-        len = sizeof(error);
-        code = getsockopt(sockfd, SOL_SOCKET, SO_ERROR, &error, &len);
-        /* 
-        Èç¹û·¢Éú´íÎó£¬SolarisÊµÏÖµÄgetsockopt·µ»Ø-1,°Ñpending errorÉèÖÃ¸øerrno. 
-        BerkeleyÊµÏÖµÄgetsockopt·µ»Ø0, pending error·µ»Ø¸øerror.ÎÒÃÇÐèÒª´¦ÀíÕâÁ½ÖÖÇé¿ö 
-        */
-        if (code < 0 || error) {
-            close(sockfd);
-            if (error) 
-                errno = error;
-            return (-1);
-        }
-    } else {
-        mqtt_debug("select error: sockfd not set\r\n");
-		return (-1);
-    }
-
-done:
-	/* restore file status flags */
-    fcntl(sockfd, F_SETFL, flags);
-    return (0);
 }
 
 /* Socket safe API,do not need to close socket or ssl session if this fucntion return MQTT_ERR; */
-static int init_socket(mqtt_broker_cut_t *broker, const char *hostname, unsigned short port)
+static int init_socket(mqtt_broker_handle_t *broker, const char *hostname, unsigned short port, int keepalive)
 {
     int socket_id = -1, ret = -1;
     struct sockaddr_in socket_addr;
     
     socket_id = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-	broker->socketid = socket_id;
     if(socket_id < 0) {
-		mqtt_debug("socket() error\n");
         return MQTT_ERR;
     }
     memset(&socket_addr, 0, sizeof(struct sockaddr_in));
     socket_addr.sin_family = AF_INET;
     socket_addr.sin_port = htons(port);
     socket_addr.sin_addr.s_addr = ipaddr_addr(hostname);
-	mqtt_debug("mqtt connect ing\n");
 #if MQTT_USE_SSL
     ret = HTTPWrapperSSLConnect(&ssl, socket_id, (struct sockaddr *)&socket_addr, sizeof(socket_addr), NULL);
 #else
-	/* Â·ÓÉÉÏµç£¬ÎÞÍâÍø£¬´Ëº¯Êý´ó¸Å18Ãë×óÓÒ»á·µ»ØÊ§°Ü£»Â·ÓÉ¶Ïµç£¬´Ëº¯Êý´ó¸Å²»»á·µ»Ø£¬ÓÐ²âÊÔÁË15·ÖÖÓ¶¼Ã»ÓÐ·µ»Ø */
-	//ret = connect(socket_id, (struct sockaddr*)&socket_addr, sizeof(socket_addr));
-	ret = connect_nonblock(socket_id, (struct sockaddr*)&socket_addr, sizeof(socket_addr), 5);
+	ret = connect(socket_id, (struct sockaddr*)&socket_addr, sizeof(socket_addr))
 #endif
-	mqtt_debug("mqtt connect ret= %d\n", ret);
     if(ret < 0)
     {
-        mqtt_close(&(broker->socketid));
+        mqtt_debug("mqtt connect failed = %d\n", ret);
+        mqtt_close();
         return MQTT_ERR;
     }
-		
+    mqtt_set_alive(broker, keepalive);
+    broker->socketid = socket_id;
+    broker->mqttsend = mqtt_send;
+
     return MQTT_OK;
 }
 
